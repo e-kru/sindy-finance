@@ -1,17 +1,17 @@
-import numpy as np
 from src.simulation import simulate_ou
 from src.library import build_polynomial_library
+from src.stlsq import stlsq
 
-# simulate data
 x = simulate_ou()
 
-# prepare data
 X = x[:-1].reshape(-1, 1)
 Y = x[1:].reshape(-1, 1)
 
-# build library
-Theta = build_polynomial_library(X)
+Theta, feature_names = build_polynomial_library(X, degree=2)
 
-print("Shapes:")
-print("X:", X.shape)
-print("Theta:", Theta.shape)
+Xi = stlsq(Theta, Y, threshold=0.05, max_iter=10)
+
+print("Feature names:", feature_names)
+print("Xi shape:", Xi.shape)
+print("Recovered coefficients:")
+print(Xi)
