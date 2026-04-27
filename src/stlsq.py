@@ -3,23 +3,7 @@ import numpy as np
 
 def stlsq(Theta, Y, threshold=0.05, max_iter=10):
     """
-    Sequential Thresholded Least Squares.
-
-    Parameters
-    ----------
-    Theta : np.ndarray
-        Feature library matrix of shape (n_samples, n_library_features)
-    Y : np.ndarray
-        Target matrix of shape (n_samples, n_targets)
-    threshold : float
-        Coefficients with absolute value below this are set to zero
-    max_iter : int
-        Number of thresholding/refitting iterations
-
-    Returns
-    -------
-    Xi : np.ndarray
-        Sparse coefficient matrix of shape (n_library_features, n_targets)
+    Sequential Thresholded Least Squares with simple convergence logic.
     """
     if not isinstance(Theta, np.ndarray):
         raise TypeError("Theta must be a numpy array")
@@ -36,16 +20,28 @@ def stlsq(Theta, Y, threshold=0.05, max_iter=10):
     if Theta.shape[0] != Y.shape[0]:
         raise ValueError("Theta and Y must have the same number of rows")
 
-    # Initial least-squares fit
+    # initial least-squares fit
     Xi, *_ = np.linalg.lstsq(Theta, Y, rcond=None)
 
-    # Iterative thresholding + refitting
+    previous_support = None
+
     for _ in range(max_iter):
+        # 1) threshold small coefficients
         small = np.abs(Xi) < threshold
         Xi[small] = 0.0
 
+        # 2) current support = which coefficients are nonzero
+        current_support = Xi != 0.0
+
+        # 3) stop if support did not change
+        if previous_support is not None and np.array_equal(current_support, previous_support):
+            break
+
+        previous_support = current_support.copy()
+
+        # 4) refit each target only on active features
         for target_idx in range(Y.shape[1]):
-            big_idx = ~small[:, target_idx]
+            big_idx = current_support[:, target_idx]
 
             if np.sum(big_idx) == 0:
                 continue
