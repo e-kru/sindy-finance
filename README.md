@@ -59,3 +59,4 @@ The algorithm:
 ## Author
 
 GitHub: https://github.com/e-kru
+
