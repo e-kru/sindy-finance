@@ -1,6 +1,6 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 
 # Virtual environment
 .venv/
@@ -8,8 +8,14 @@ __pycache__/
 # PyCharm
 .idea/
 
-# Mac
-.DS_Store
-
 # Jupyter
 .ipynb_checkpoints/
+
+# Tests
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Downloaded or generated data
+data/
