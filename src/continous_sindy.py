@@ -4,78 +4,158 @@ from src.library import build_polynomial_library
 from src.stlsq import stlsq
 
 
-def finite_difference(X, dt):
+def finite_difference(
+    states: np.ndarray,
+    dt: float,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Estimate time derivatives using forward finite differences.
 
+    For observations x_k at equally spaced times,
+
+        dx/dt ≈ (x_{k+1} - x_k) / dt.
+
     Parameters
     ----------
-    X : np.ndarray
-        State data of shape (n_time_steps, n_features)
-    dt : float
-        Time step size
+    states:
+        State observations with shape
+        (n_time_steps, n_features).
+    dt:
+        Positive time-step size.
 
     Returns
     -------
-    X_current : np.ndarray
-        States x_k of shape (n_time_steps - 1, n_features)
-    dXdt : np.ndarray
-        Estimated derivatives of shape (n_time_steps - 1, n_features)
+    current_states:
+        States x_k with shape
+        (n_time_steps - 1, n_features).
+    derivatives:
+        Forward-difference derivative estimates with shape
+        (n_time_steps - 1, n_features).
     """
-    if not isinstance(X, np.ndarray):
-        raise TypeError("X must be a numpy array")
+    if not isinstance(states, np.ndarray):
+        raise TypeError("states must be a numpy array")
 
-    if X.ndim != 2:
-        raise ValueError("X must be 2D")
+    if states.ndim != 2:
+        raise ValueError("states must be 2D")
+
+    if states.shape[0] < 2:
+        raise ValueError("states must contain at least two time steps")
 
     if dt <= 0:
         raise ValueError("dt must be positive")
 
-    X_current = X[:-1]
-    X_next = X[1:]
+    current_states = states[:-1]
+    next_states = states[1:]
 
-    dXdt = (X_next - X_current) / dt
+    derivatives = (next_states - current_states) / dt
 
-    return X_current, dXdt
+    return current_states, derivatives
 
 
-def fit_continuous_sindy(X, dt, degree=2, threshold=0.05, max_iter=10):
+def fit_continuous_sindy(
+    states: np.ndarray,
+    dt: float,
+    degree: int = 2,
+    threshold: float = 0.05,
+    max_iter: int = 10,
+) -> tuple[np.ndarray, list[str], np.ndarray, np.ndarray]:
     """
     Fit a continuous-time SINDy model.
 
-    Model:
-        dXdt ≈ Theta(X) Xi
+    The model has the form
+
+        dX/dt ≈ Theta(X) @ coefficients.
+
+    The derivatives are estimated using forward finite differences.
+
+    Parameters
+    ----------
+    states:
+        State observations with shape
+        (n_time_steps, n_features).
+    dt:
+        Time-step size.
+    degree:
+        Maximum polynomial degree of the candidate library.
+    threshold:
+        STLSQ sparsity threshold.
+    max_iter:
+        Maximum number of STLSQ iterations.
+
+    Returns
+    -------
+    coefficients:
+        Sparse SINDy coefficient matrix.
+    feature_names:
+        Names of the candidate-library terms.
+    current_states:
+        States used to construct the library.
+    derivatives:
+        Estimated time derivatives.
     """
-    X_current, dXdt = finite_difference(X, dt)
+    current_states, derivatives = finite_difference(states, dt)
 
-    Theta, feature_names = build_polynomial_library(X_current, degree=degree)
+    theta_matrix, feature_names = build_polynomial_library(
+        current_states,
+        degree=degree,
+    )
 
-    Xi = stlsq(
-        Theta,
-        dXdt,
+    coefficients = stlsq(
+        theta_matrix,
+        derivatives,
         threshold=threshold,
         max_iter=max_iter,
     )
 
-    return Xi, feature_names, X_current, dXdt
+    return coefficients, feature_names, current_states, derivatives
 
 
-def predict_derivative_continuous_sindy(X, Xi, degree=2):
+def predict_continuous_sindy(
+    states: np.ndarray,
+    coefficients: np.ndarray,
+    degree: int = 2,
+) -> np.ndarray:
     """
-    Predict derivatives using a fitted continuous-time SINDy model.
+    Predict state derivatives using a fitted continuous-time SINDy model.
 
-    Model:
-        dXdt_hat = Theta(X) Xi
+    The prediction is
+
+        predicted_derivatives = Theta(states) @ coefficients.
+
+    Parameters
+    ----------
+    states:
+        Input states with shape (n_samples, n_features).
+    coefficients:
+        Learned SINDy coefficient matrix.
+    degree:
+        Polynomial degree used during fitting.
+
+    Returns
+    -------
+    np.ndarray
+        Predicted state derivatives.
     """
-    if not isinstance(X, np.ndarray):
-        raise TypeError("X must be a numpy array")
+    if not isinstance(states, np.ndarray):
+        raise TypeError("states must be a numpy array")
 
-    if not isinstance(Xi, np.ndarray):
-        raise TypeError("Xi must be a numpy array")
+    if not isinstance(coefficients, np.ndarray):
+        raise TypeError("coefficients must be a numpy array")
 
-    Theta, _ = build_polynomial_library(X, degree=degree)
+    if states.ndim != 2:
+        raise ValueError("states must be 2D")
 
-    if Theta.shape[1] != Xi.shape[0]:
-        raise ValueError("Theta and Xi have incompatible shapes")
+    if coefficients.ndim != 2:
+        raise ValueError("coefficients must be 2D")
 
-    return Theta @ Xi
+    theta_matrix, _ = build_polynomial_library(
+        states,
+        degree=degree,
+    )
+
+    if theta_matrix.shape[1] != coefficients.shape[0]:
+        raise ValueError(
+            "Library matrix and coefficient matrix have incompatible shapes"
+        )
+
+    return theta_matrix @ coefficients
