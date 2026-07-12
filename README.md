@@ -1,477 +1,258 @@
-# Sparse Discovery of Dynamical Systems with SINDy
+# Sparse Identification of Dynamical Systems from Scratch
 
-This project implements a small from-scratch version of **SINDy** — Sparse Identification of Nonlinear Dynamics — and applies it to synthetic dynamical systems and financial time-series examples.
+A compact, from-scratch implementation of **Sparse Identification of Nonlinear Dynamics (SINDy)**, with experiments on synthetic dynamical systems, chaotic dynamics, and U.S. Treasury yields.
 
-The goal is not to build a black-box forecasting model. Instead, the project studies when sparse equation discovery works well, when it fails, and why real financial data are harder than clean physical systems.
+The project focuses on a central question in scientific machine learning:
 
-SINDy is based on a simple idea: many dynamical systems can be represented by only a few active terms from a larger candidate library. Given observations of a system and its derivatives, SINDy uses sparse regression to identify the governing equations.
+> Can we recover interpretable governing equations directly from data?
 
----
+Rather than using SINDy as a black-box package, this repository implements the core pipeline in NumPy and studies both where sparse equation discovery works and where it breaks down.
 
-## Project structure
+<p align="center">
+  <img src="figures/vasicek_path.png" alt="Simulated Vasicek short-rate path" width="800">
+</p>
 
-```text
-sindy-finance/
-├── src/
-│   ├── library.py
-│   ├── stlsq.py
-│   ├── discrete_sindy.py
-│   ├── continuous_sindy.py
-│   └── simulation.py
-│
-├── tests/
-│   ├── test_library.py
-│   ├── test_stlsq.py
-│   └── test_continuous_sindy.py
-│
-├── notebooks/
-│   ├── 01_vasicek_sindy.ipynb
-│   ├── 02_real_yield_sindy.ipynb
-│   ├── 04_yield_curve_factors_sindy.ipynb
-│   └── 05_lorenz_sindy.ipynb
-│
-├── figures/
-├── main.py
-└── README.md
-```
+## What this project demonstrates
 
----
+- Construction of polynomial candidate libraries from scratch
+- Sequential Thresholded Least Squares (STLSQ)
+- Discrete-time and continuous-time SINDy
+- Numerical simulation and derivative estimation
+- Unit testing with `pytest`
+- Chronological train/test evaluation for time-series data
+- Comparison against simple forecasting baselines
+- Critical analysis of model assumptions and failure modes
 
-## Methodology
+## Core idea
 
-For a continuous-time dynamical system, SINDy starts from
+For a continuous-time dynamical system,
 
-$$\dot{x}(t) = f(x(t)).$$
+$$
+\dot X(t)=f(X(t)),
+$$
 
-The observed states are collected in a matrix `X`, and the time derivatives are collected in `dXdt`.
+SINDy assumes that the dynamics can be represented by a sparse combination of candidate functions:
 
-A candidate library is constructed from possible nonlinear functions of the state:
-
-```text
-Theta(X) = [1, X, X^2, ...]
-```
-
-SINDy then solves the sparse regression problem
-
-$$\dot{X} \approx \Theta(X)\Xi.$$
+$$
+\dot X \approx \Theta(X)\Xi.
+$$
 
 Here:
 
-- `Theta(X)` is the candidate library matrix.
-- `Xi` is the sparse coefficient matrix.
-- Each column of `Xi` corresponds to one discovered equation.
+- $\Theta(X)$ is a candidate-library matrix,
+- $\Xi$ is a sparse coefficient matrix,
+- each column of $\Xi$ defines one discovered state equation.
 
-The key assumption is that only a few candidate terms are actually needed.
+For example, a quadratic library for three variables contains
 
----
+$$
+\Theta(X)
+=
+[
+1,
+x,
+y,
+z,
+x^2,
+xy,
+xz,
+y^2,
+yz,
+z^2
+].
+$$
 
-## Polynomial library
+The optimizer first fits least squares, removes small coefficients, and then refits only on the surviving terms.
 
-The function `build_polynomial_library` constructs polynomial feature libraries.
+## Experiments and key results
 
-For one variable and degree 2:
+| Experiment | Main question | Result |
+|---|---|---|
+| **Lorenz system** | Can SINDy recover known nonlinear equations? | The correct 7 active coefficients are recovered from 30 candidates, with coefficient error near numerical precision. |
+| **Vasicek / Ornstein–Uhlenbeck process** | Can SINDy identify mean reversion? | The discrete-time model closely recovers the theoretical Euler coefficients. The continuous-time model recovers the correct drift structure but is noisier because finite differences amplify diffusion noise. |
+| **10-year Treasury yield** | Does SINDy improve one-day forecasts? | The learned coefficient is approximately $0.9997$, showing strong persistence. Linear SINDy performs almost identically to the persistence baseline, while the quadratic model is marginally worse. |
+| **Yield-curve factors** | Can sparse equations identify dynamics in level, slope, and curvature? | Small out-of-sample improvements appear for level and slope, but not for curvature. Linear regime models are more interpretable than dense quadratic models. |
 
-```text
-[1, x, x^2]
-```
+## 1. Lorenz system
 
-For two variables and degree 2:
+The Lorenz equations are
 
-```text
-[1, x1, x2, x1^2, x1*x2, x2^2]
-```
+$$
+\dot x=-10x+10y,
+$$
 
-For three variables and degree 2:
+$$
+\dot y=28x-y-xz,
+$$
 
-```text
-[1, x1, x2, x3, x1^2, x1*x2, x1*x3, x2^2, x2*x3, x3^2]
-```
+$$
+\dot z=xy-\frac{8}{3}z.
+$$
 
-This is the candidate space from which SINDy selects sparse governing equations.
+SINDy is given a larger quadratic library and correctly selects only the required terms.
 
----
+This serves as a **positive control**: the system is closed, stationary, sparse, and fully represented by the candidate library.
 
-## Sequential Thresholded Least Squares
+## 2. Vasicek mean-reversion experiment
 
-The optimizer `stlsq` implements **Sequential Thresholded Least Squares**.
+The Vasicek short-rate model is
 
-The regression problem is
+$$
+dr_t=\kappa(\theta-r_t)\,dt+\sigma\,dW_t.
+$$
 
-$$Y \approx \Theta(X)\Xi.$$
+Its deterministic drift is linear:
 
-The algorithm is:
+$$
+\kappa(\theta-r_t)=\kappa\theta-\kappa r_t.
+$$
 
-1. Fit an initial least-squares model.
-2. Set coefficients with absolute value below a threshold to zero.
-3. Refit least squares only on the remaining active terms.
-4. Repeat until convergence or until the maximum number of iterations is reached.
+Therefore, the true drift is sparse in the library
 
-The threshold controls sparsity:
+$$
+\Theta(r)=[1,r].
+$$
 
-```text
-small threshold  -> many active terms
-large threshold  -> fewer active terms
-```
+The discrete-time SINDy model learns the conditional one-step transition, while the continuous-time model fits finite-difference derivative estimates.
 
----
+<p align="center">
+  <img src="figures/vasicek_discrete_prediction.png" alt="Discrete-time SINDy prediction on Vasicek data" width="800">
+</p>
 
-## Discrete-time SINDy
+<p align="center">
+  <img src="figures/vasicek_continuous_derivative.png" alt="Continuous-time SINDy derivative fit" width="800">
+</p>
 
-Discrete-time SINDy fits models of the form
+A central limitation becomes visible in continuous time:
 
-$$X_{t+1} \approx F(X_t).$$
+$$
+\frac{r_{k+1}-r_k}{\Delta t}
+=
+\kappa(\theta-r_k)
++
+\frac{\sigma}{\sqrt{\Delta t}}\varepsilon_k.
+$$
 
-For example, in one dimension:
+Finite differences amplify the stochastic noise by a factor proportional to $1/\sqrt{\Delta t}$.
 
-$$x_{t+1} \approx c_0 + c_1 x_t + c_2 x_t^2.$$
+## 3. Real Treasury-yield experiments
 
-This is useful for one-step prediction experiments.
+The real-data notebooks use Treasury constant-maturity series from FRED.
 
----
+The experiments examine:
 
-## Continuous-time SINDy
+- one-step prediction of the 10-year Treasury yield,
+- level, slope, and curvature factor dynamics,
+- linear versus quadratic candidate libraries,
+- full-sample versus regime-specific models,
+- comparison against persistence and zero-change baselines.
 
-Continuous-time SINDy fits models of the form
+The main finding is that daily Treasury yields are dominated by persistence. Sparse models can reveal weak and interpretable structure, but additional nonlinear terms do not produce uniformly robust forecasting improvements.
 
-$$\dot{X} \approx \Theta(X)\Xi.$$
+These notebooks should be understood as **model-discovery experiments**, not as evidence of a profitable trading strategy.
 
-For example, in one dimension:
-
-$$\dot{x} \approx c_0 + c_1 x + c_2 x^2.$$
-
-This is closer to the original SINDy formulation for discovering governing differential equations.
-
----
-
-# Experiments
-
----
-
-## 1. Synthetic Vasicek / Ornstein-Uhlenbeck dynamics
-
-Notebook:
-
-```text
-notebooks/01_vasicek_sindy.ipynb
-```
-
-The Vasicek short-rate model is a finance version of an Ornstein-Uhlenbeck process:
-
-$$dr_t = \kappa(\theta-r_t)dt + \sigma dW_t.$$
-
-Using an Euler approximation:
-
-$$r_{t+\Delta t} = r_t + \kappa(\theta-r_t)\Delta t + \sigma\sqrt{\Delta t}\epsilon_t.$$
-
-Ignoring the noise term for the conditional mean gives
-
-$$\mathbb{E}[r_{t+\Delta t}\mid r_t] = \kappa\theta\Delta t + (1-\kappa\Delta t)r_t.$$
-
-So the discrete-time model has the form
-
-$$r_{t+1} \approx c_0 + c_1 r_t.$$
-
-**Takeaway:** SINDy recovers known sparse mean-reverting dynamics on synthetic finance data.
-
----
-
-## 2. Real Treasury yield experiment: DGS10
-
-Notebook:
+## Repository structure
 
 ```text
-notebooks/02_real_yield_sindy.ipynb
+sindy-finance/
+├── figures/
+│   ├── vasicek_path.png
+│   ├── vasicek_discrete_prediction.png
+│   └── vasicek_continuous_derivative.png
+├── notebooks/
+│   ├── 01_vasicek_sindy.ipynb
+│   ├── 02_real_yield_sindy.ipynb
+│   ├── 03_yield_curve_factors_sindy.ipynb
+│   └── 04_lorenz_sindy.ipynb
+├── src/
+│   ├── __init__.py
+│   ├── continuous_sindy.py
+│   ├── discrete_sindy.py
+│   ├── library.py
+│   ├── simulation.py
+│   └── stlsq.py
+├── tests/
+│   ├── test_continuous_sindy.py
+│   ├── test_discrete_sindy.py
+│   ├── test_library.py
+│   └── test_stlsq.py
+├── main.py
+├── pytest.ini
+├── requirements.txt
+└── README.md
 ```
 
-This experiment applies discrete-time SINDy to the real U.S. 10-year Treasury yield series `DGS10` from FRED.
+## Installation
 
-The model fits
-
-$$y_{t+1} \approx c_0 + c_1 y_t.$$
-
-The estimated coefficient `c1` is very close to 1, so the fitted model is close to
-
-$$y_{t+1} \approx y_t.$$
-
-This means that the daily 10-year Treasury yield behaves like a highly persistent near-random-walk process.
-
-**Takeaway:** On daily DGS10 data, SINDy mostly recovers persistence rather than useful nonlinear forecasting structure.
-
----
-
-## 3. Real yield-curve factor dynamics
-
-Notebook:
-
-```text
-notebooks/04_yield_curve_factors_sindy.ipynb
-```
-
-This experiment builds a three-factor representation of the Treasury yield curve.
-
-```text
-level     = DGS10
-slope     = DGS10 - DGS2
-curvature = 2*DGS5 - DGS2 - DGS10
-```
-
-The state vector is
-
-$$X_t = (L_t, S_t, C_t).$$
-
-The model studies daily factor changes:
-
-$$\Delta X_{t+1} = X_{t+1} - X_t.$$
-
-The quadratic candidate library is
-
-```text
-[1, L, S, C, L^2, L*S, L*C, S^2, S*C, C^2]
-```
-
-The model is
-
-$$\Delta X_{t+1} \approx \Theta(L_t,S_t,C_t)\Xi.$$
-
-The zero-change baseline is
-
-$$\widehat{\Delta X}_{t+1}=0.$$
-
-### Full-sample result
-
-The full-sample linear SINDy model identifies economically interpretable mean-reversion-like coefficients, especially for slope and curvature.
-
-For example, the linear library produced negative self-effects in the slope and curvature equations:
-
-```text
-slope     -> Delta slope      : negative
-curvature -> Delta curvature  : negative
-```
-
-This is consistent with weak mean-reversion-like behavior in yield-curve shape factors.
-
-However, out-of-sample validation shows that the zero-change baseline is difficult to beat.
-
-**Takeaway:** SINDy identifies plausible candidate structures, but daily yield-curve factor changes are too noisy for robust one-day forecasting in this setup.
-
----
-
-## 4. Threshold sweep on yield-curve factors
-
-The quadratic library contains 30 possible coefficients because there are 10 library terms and 3 target equations.
-
-A threshold sweep shows how sparsity changes with the STLSQ threshold.
-
-For small thresholds, the model remains dense. For a high threshold,
-
-$$\lambda = 0.1,$$
-
-the model becomes much more sparse and keeps only three active terms:
-
-$$\Delta L_{t+1} = -0.417483 C_t^2,$$
-
-$$\Delta S_{t+1} = 0.304801 C_t^2,$$
-
-$$\Delta C_{t+1} = -0.179575 L_t C_t.$$
-
-The most interpretable equation is
-
-$$\Delta C_{t+1} = -0.179575 L_t C_t.$$
-
-Since nominal rate levels are usually positive, this behaves like curvature mean reversion:
-
-$$\Delta C_{t+1} \approx -k_t C_t, \quad k_t = 0.179575 L_t > 0.$$
-
-Thus, positive curvature is pulled downward and negative curvature is pulled upward. This suggests a level-dependent curvature mean-reversion candidate structure.
-
-However, the out-of-sample improvement over the zero-change baseline is very small.
-
-**Takeaway:** Thresholding improves sparsity and interpretability, but it does not create robust predictive power.
-
----
-
-## 5. Regime-specific yield-curve analysis
-
-The project also tests a shorter monetary-policy regime starting on `2024-09-18`, the beginning of the recent Fed cutting-cycle period.
-
-The motivation is that SINDy assumes relatively stable dynamics. A single equation over several decades of financial data may be too restrictive because rates are regime-dependent.
-
-The regime-specific linear SINDy model produces stronger mean-reversion-like self-effects:
-
-```text
-level     -> Delta level      : negative
-slope     -> Delta slope      : negative
-curvature -> Delta curvature  : negative
-```
-
-Out-of-sample validation is mixed:
-
-- The linear model improves the level forecast relative to the zero-change baseline.
-- It performs worse for slope and curvature.
-- The quadratic model performs worse across all three factors.
-
-**Takeaway:** Regime selection can make discovered equations more interpretable, but it does not automatically create robust predictive power.
-
----
-
-## 6. Lorenz system: positive control experiment
-
-Notebook:
-
-```text
-notebooks/05_lorenz_sindy.ipynb
-```
-
-The Lorenz system is a classic nonlinear dynamical system:
-
-$$\dot{x} = \sigma(y-x),$$
-
-$$\dot{y} = x(\rho-z)-y,$$
-
-$$\dot{z} = xy-\beta z.$$
-
-Using the classical parameters
-
-```text
-sigma = 10
-rho   = 28
-beta  = 8/3
-```
-
-the system becomes
-
-$$\dot{x} = -10x + 10y,$$
-
-$$\dot{y} = 28x - y - xz,$$
-
-$$\dot{z} = xy - \frac{8}{3}z.$$
-
-SINDy is given the larger degree-2 polynomial library
-
-```text
-[1, x, y, z, x^2, x*y, x*z, y^2, y*z, z^2]
-```
-
-The true equations only require a few of these candidate terms:
-
-```text
-x_dot: x, y
-y_dot: x, y, x*z
-z_dot: x*y, z
-```
-
-SINDy recovers the equations almost exactly:
-
-$$\dot{x} = -10x + 10y,$$
-
-$$\dot{y} = 28x - y - xz,$$
-
-$$\dot{z} = xy - 2.6667z.$$
-
-The derivative MSE is essentially zero, and the coefficient error is at numerical precision.
-
-**Takeaway:** When the true dynamics are sparse, stable, and contained in the candidate library, SINDy recovers the governing equations almost exactly.
-
----
-
-# Main conclusion
-
-This project shows both the strength and the limitation of SINDy.
-
-## Where SINDy works well
-
-SINDy performs very well when:
-
-- the underlying system is governed by stable differential equations,
-- the observed state variables form a reasonably closed system,
-- the correct candidate terms are included in the library,
-- the dynamics are sparse in that library,
-- derivative estimates are clean.
-
-This is clearly visible in the Lorenz experiment.
-
-## Where SINDy struggles
-
-SINDy is less effective as a direct forecasting tool for daily financial time series.
-
-Real yield data are affected by:
-
-- monetary policy,
-- inflation expectations,
-- growth expectations,
-- term premia,
-- risk sentiment,
-- regime changes,
-- macro news shocks.
-
-Therefore, daily Treasury yield factors do not behave like a closed physical system in the observed variables alone.
-
-**Final takeaway:** SINDy is useful as an interpretable model-discovery tool, but not as a strong one-day forecasting model for daily Treasury yields.
-
----
-
-# How to run
-
-Create and activate a virtual environment:
+Clone the repository and create a virtual environment:
 
 ```bash
+git clone https://github.com/e-kru/sindy-finance.git
+cd sindy-finance
+
 python -m venv .venv
 source .venv/bin/activate
 ```
 
-Install dependencies:
+Install the dependencies:
 
 ```bash
-pip install numpy pandas matplotlib scipy requests certifi pytest
+pip install -r requirements.txt
 ```
 
-Run tests:
+The main dependencies are:
+
+- NumPy
+- pandas
+- Matplotlib
+- SciPy
+- requests
+- certifi
+- pytest
+- Jupyter
+
+## Run the tests
 
 ```bash
-pytest
+pytest -v
 ```
 
-Run the main script:
+The test suite covers:
+
+- polynomial-library construction,
+- sparse coefficient recovery,
+- discrete-time prediction,
+- continuous-time derivative estimation,
+- input validation and error handling.
+
+## Run the Vasicek example
 
 ```bash
 python main.py
 ```
 
-Open notebooks:
+This simulates a Vasicek process, fits discrete- and continuous-time SINDy models, prints the recovered equations, and saves the main figures.
+
+## Run the notebooks
 
 ```bash
 jupyter notebook
 ```
 
-or open the notebooks directly in PyCharm.
+The real Treasury-yield notebooks download public FRED data at runtime and therefore require an internet connection.
 
----
+## Main limitations
 
-# Key dependencies
+- The polynomial library currently supports degrees 1 and 2 only.
+- STLSQ uses a fixed absolute threshold.
+- Continuous-time SINDy relies on forward finite differences.
+- The implementation does not include regularization, smoothing, uncertainty estimates, or automated model selection.
+- Financial factor dynamics are not a closed system and are affected by omitted macroeconomic variables and regime changes.
 
-```text
-numpy
-pandas
-matplotlib
-scipy
-requests
-certifi
-pytest
-```
+These limitations are intentional: the implementation is designed to make the core mechanics transparent rather than to replace mature libraries such as PySINDy.
 
----
-
-# Status
-
-This is an educational research project built from scratch for a seminar on Scientific Machine Learning and SINDy.
-
-The implementation is intentionally simple and focuses on understanding the method rather than replacing mature packages such as PySINDy.
-
----
-
-# References
+## References
 
 - Brunton, S. L., Proctor, J. L., and Kutz, J. N. (2016). *Discovering governing equations from data by sparse identification of nonlinear dynamical systems*. Proceedings of the National Academy of Sciences.
-- PySINDy documentation: Sparse Identification of Nonlinear Dynamics.
-- Federal Reserve H.15: Treasury constant maturity yield methodology.
-- Lorenz system: classical nonlinear system with parameters $\sigma=10$, $\rho=28$, $\beta=8/3$.
+- Kaptanoglu, A. A. et al. (2022). *PySINDy: A comprehensive Python package for robust sparse system identification*. Journal of Open Source Software.
+- Federal Reserve Economic Data (FRED), Federal Reserve Bank of St. Louis.
