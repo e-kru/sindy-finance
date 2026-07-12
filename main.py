@@ -1,169 +1,287 @@
-import numpy as np
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
 
+from src.continuous_sindy import (
+    fit_continuous_sindy,
+    predict_continuous_sindy,
+)
+from src.discrete_sindy import (
+    fit_discrete_sindy,
+    predict_discrete_sindy,
+)
 from src.simulation import simulate_vasicek
-from src.discrete_sindy import fit_discrete_sindy, predict_discrete_sindy
-from src.continous_sindy import fit_continuous_sindy, predict_derivative_continuous_sindy
 
 
-def format_equation(feature_names, Xi, target_name="y", tolerance=1e-10):
-    """Format learned coefficients as a readable equation."""
+FIGURE_DIR = Path("figures")
+
+
+def format_equation(
+    feature_names: list[str],
+    coefficients: np.ndarray,
+    target_name: str,
+    tolerance: float = 1e-10,
+) -> str:
+    """
+    Format a one-dimensional SINDy model as a readable equation.
+    """
     terms = []
 
-    for name, coefficient in zip(feature_names, Xi[:, 0]):
+    for feature_name, coefficient in zip(
+        feature_names,
+        coefficients[:, 0],
+    ):
         if abs(coefficient) <= tolerance:
             continue
 
-        if name == "1":
-            terms.append(f"{coefficient:.4f}")
+        if feature_name == "1":
+            term = f"{coefficient:.4f}"
         else:
-            terms.append(f"{coefficient:.4f}*{name}")
+            term = f"{coefficient:+.4f}*{feature_name}"
+
+        terms.append(term)
 
     if not terms:
         return f"{target_name} = 0"
 
-    return f"{target_name} = " + " + ".join(terms)
+    equation = " ".join(terms)
+
+    if equation.startswith("+"):
+        equation = equation[1:].lstrip()
+
+    return f"{target_name} = {equation}"
 
 
-# Parameters for the Vasicek / OU short-rate process
-n_steps = 2000
-dt = 0.01
-kappa = 1.5
-theta = 0.03
-sigma = 0.02
-r0 = 0.01
+def run_vasicek_experiment() -> None:
+    """
+    Simulate a Vasicek process and fit discrete- and continuous-time
+    SINDy models.
+    """
+    n_steps = 2000
+    dt = 0.01
+    kappa = 1.5
+    long_run_mean = 0.03
+    sigma = 0.02
+    initial_rate = 0.01
 
-# Simulate Vasicek short-rate data
-r = simulate_vasicek(
-    n_steps=n_steps,
-    dt=dt,
-    kappa=kappa,
-    theta=theta,
-    sigma=sigma,
-    r0=r0,
-    seed=42,
-)
+    rates = simulate_vasicek(
+        n_steps=n_steps,
+        dt=dt,
+        kappa=kappa,
+        theta=long_run_mean,
+        sigma=sigma,
+        r0=initial_rate,
+        seed=42,
+    )
 
-R_full = r.reshape(-1, 1)
+    full_states = rates.reshape(-1, 1)
 
-# ------------------------------------------------------------
-# 1) Discrete-time SINDy: r_{k+1} ≈ F(r_k)
-# ------------------------------------------------------------
-X_discrete = r[:-1].reshape(-1, 1)
-Y_discrete = r[1:].reshape(-1, 1)
+    # Discrete-time model:
+    # r_{k+1} ≈ Theta(r_k) @ coefficients
+    discrete_states = rates[:-1].reshape(-1, 1)
+    discrete_targets = rates[1:].reshape(-1, 1)
 
-Xi_discrete, names_discrete = fit_discrete_sindy(
-    X_discrete,
-    Y_discrete,
-    degree=1,
-    threshold=0.00001,
-    max_iter=10,
-)
+    discrete_coefficients, discrete_features = fit_discrete_sindy(
+        discrete_states,
+        discrete_targets,
+        degree=1,
+        threshold=1e-5,
+        max_iter=10,
+    )
 
-Y_discrete_hat = predict_discrete_sindy(
-    X_discrete,
-    Xi_discrete,
-    degree=1,
-)
+    discrete_predictions = predict_discrete_sindy(
+        discrete_states,
+        discrete_coefficients,
+        degree=1,
+    )
 
-discrete_mse = np.mean((Y_discrete - Y_discrete_hat) ** 2)
-discrete_equation = format_equation(
-    names_discrete,
-    Xi_discrete,
-    target_name="r_next",
-)
+    discrete_mse = np.mean(
+        (discrete_targets - discrete_predictions) ** 2
+    )
 
-# ------------------------------------------------------------
-# 2) Continuous-time SINDy: r_dot ≈ f(r)
-# ------------------------------------------------------------
-Xi_continuous, names_continuous, R_current, dRdt = fit_continuous_sindy(
-    R_full,
-    dt=dt,
-    degree=1,
-    threshold=0.00001,
-    max_iter=10,
-)
+    # Continuous-time model:
+    # dr/dt ≈ Theta(r) @ coefficients
+    (
+        continuous_coefficients,
+        continuous_features,
+        current_states,
+        derivatives,
+    ) = fit_continuous_sindy(
+        full_states,
+        dt=dt,
+        degree=1,
+        threshold=1e-5,
+        max_iter=10,
+    )
 
-dRdt_hat = predict_derivative_continuous_sindy(
-    R_current,
-    Xi_continuous,
-    degree=1,
-)
+    derivative_predictions = predict_continuous_sindy(
+        current_states,
+        continuous_coefficients,
+        degree=1,
+    )
 
-continuous_mse = np.mean((dRdt - dRdt_hat) ** 2)
-continuous_equation = format_equation(
-    names_continuous,
-    Xi_continuous,
-    target_name="r_dot",
-)
+    continuous_mse = np.mean(
+        (derivatives - derivative_predictions) ** 2
+    )
 
-expected_discrete_constant = kappa * theta * dt
-expected_discrete_linear = 1 - kappa * dt
-expected_continuous_constant = kappa * theta
-expected_continuous_linear = -kappa
+    print_results(
+        discrete_features=discrete_features,
+        discrete_coefficients=discrete_coefficients,
+        discrete_mse=discrete_mse,
+        continuous_features=continuous_features,
+        continuous_coefficients=continuous_coefficients,
+        continuous_mse=continuous_mse,
+        kappa=kappa,
+        long_run_mean=long_run_mean,
+        dt=dt,
+    )
 
-# ------------------------------------------------------------
-# 3) Print comparison
-# ------------------------------------------------------------
-print("Discrete-time SINDy")
-print("Feature names:", names_discrete)
-print("Xi:")
-print(Xi_discrete)
-print("Recovered equation:")
-print(discrete_equation)
-print("MSE:", discrete_mse)
-print()
+    save_figures(
+        rates=rates,
+        discrete_targets=discrete_targets,
+        discrete_predictions=discrete_predictions,
+        derivatives=derivatives,
+        derivative_predictions=derivative_predictions,
+        dt=dt,
+        long_run_mean=long_run_mean,
+    )
 
-print("Continuous-time SINDy")
-print("Feature names:", names_continuous)
-print("Xi:")
-print(Xi_continuous)
-print("Recovered equation:")
-print(continuous_equation)
-print("MSE:", continuous_mse)
-print()
 
-print("Theoretical comparison for Vasicek / OU short-rate model:")
-print(f"Expected discrete form: r_next ≈ {expected_discrete_constant:.6f} + {expected_discrete_linear:.6f}*r")
-print(f"Expected continuous form: r_dot ≈ {expected_continuous_constant:.6f} + {expected_continuous_linear:.6f}*r")
+def print_results(
+    discrete_features: list[str],
+    discrete_coefficients: np.ndarray,
+    discrete_mse: float,
+    continuous_features: list[str],
+    continuous_coefficients: np.ndarray,
+    continuous_mse: float,
+    kappa: float,
+    long_run_mean: float,
+    dt: float,
+) -> None:
+    """
+    Print recovered and theoretical Vasicek coefficients.
+    """
+    discrete_equation = format_equation(
+        discrete_features,
+        discrete_coefficients,
+        target_name="r_next",
+    )
 
-# ------------------------------------------------------------
-# 4) Plot comparison
-# ------------------------------------------------------------
-time = np.arange(n_steps) * dt
-n_plot = 300
+    continuous_equation = format_equation(
+        continuous_features,
+        continuous_coefficients,
+        target_name="r_dot",
+    )
 
-plt.figure(figsize=(10, 5))
-plt.plot(time[:n_plot], r[:n_plot], label="Simulated Vasicek short rate")
-plt.axhline(theta, linestyle="--", label="Long-run mean theta")
-plt.xlabel("Time")
-plt.ylabel("Short rate")
-plt.title("Simulated Vasicek / OU short-rate path")
-plt.legend()
-plt.tight_layout()
-plt.savefig("figures/vasicek_path.png", dpi=200)
+    expected_discrete_constant = kappa * long_run_mean * dt
+    expected_discrete_linear = 1.0 - kappa * dt
 
-plt.figure(figsize=(10, 5))
-plt.plot(Y_discrete[:n_plot], label="True r_next")
-plt.plot(Y_discrete_hat[:n_plot], label="Discrete SINDy prediction")
-plt.xlabel("Time step")
-plt.ylabel("Short rate")
-plt.title("Discrete-time SINDy prediction on Vasicek data")
-plt.legend()
-plt.tight_layout()
-plt.savefig("figures/vasicek_discrete_prediction.png", dpi=200)
+    expected_continuous_constant = kappa * long_run_mean
+    expected_continuous_linear = -kappa
 
-plt.figure(figsize=(10, 5))
-plt.plot(dRdt[:n_plot], label="Finite-difference derivative")
-plt.plot(dRdt_hat[:n_plot], label="Continuous SINDy derivative prediction")
-plt.xlabel("Time step")
-plt.ylabel("r_dot")
-plt.title("Continuous-time SINDy derivative fit on Vasicek data")
-plt.legend()
-plt.tight_layout()
-plt.savefig("figures/vasicek_continuous_derivative.png", dpi=200)
+    print("\nDiscrete-time SINDy")
+    print(discrete_equation)
+    print(f"MSE: {discrete_mse:.8f}")
 
-print("Saved plots:")
-print("figures/vasicek_path.png")
-print("figures/vasicek_discrete_prediction.png")
-print("figures/vasicek_continuous_derivative.png")
+    print("\nContinuous-time SINDy")
+    print(continuous_equation)
+    print(f"MSE: {continuous_mse:.8f}")
+
+    print("\nTheoretical Vasicek coefficients")
+    print(
+        "Discrete: "
+        f"r_next ≈ {expected_discrete_constant:.6f} "
+        f"+ {expected_discrete_linear:.6f}*r"
+    )
+    print(
+        "Continuous: "
+        f"r_dot ≈ {expected_continuous_constant:.6f} "
+        f"{expected_continuous_linear:+.6f}*r"
+    )
+
+
+def save_figures(
+    rates: np.ndarray,
+    discrete_targets: np.ndarray,
+    discrete_predictions: np.ndarray,
+    derivatives: np.ndarray,
+    derivative_predictions: np.ndarray,
+    dt: float,
+    long_run_mean: float,
+) -> None:
+    """
+    Save the three main Vasicek experiment figures.
+    """
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+
+    n_plot = 300
+    time = np.arange(len(rates)) * dt
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(
+        time[:n_plot],
+        rates[:n_plot],
+        label="Simulated short rate",
+    )
+    plt.axhline(
+        long_run_mean,
+        linestyle="--",
+        label="Long-run mean",
+    )
+    plt.xlabel("Time")
+    plt.ylabel("Short rate")
+    plt.title("Simulated Vasicek short-rate path")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(
+        FIGURE_DIR / "vasicek_path.png",
+        dpi=200,
+    )
+    plt.close()
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(
+        discrete_targets[:n_plot],
+        label="True next rate",
+    )
+    plt.plot(
+        discrete_predictions[:n_plot],
+        label="Discrete SINDy prediction",
+    )
+    plt.xlabel("Time step")
+    plt.ylabel("Short rate")
+    plt.title("Discrete-time SINDy on Vasicek data")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(
+        FIGURE_DIR / "vasicek_discrete_prediction.png",
+        dpi=200,
+    )
+    plt.close()
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(
+        derivatives[:n_plot],
+        label="Finite-difference derivative",
+    )
+    plt.plot(
+        derivative_predictions[:n_plot],
+        label="Continuous SINDy prediction",
+    )
+    plt.xlabel("Time step")
+    plt.ylabel("Rate derivative")
+    plt.title("Continuous-time SINDy derivative fit")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(
+        FIGURE_DIR / "vasicek_continuous_derivative.png",
+        dpi=200,
+    )
+    plt.close()
+
+    print(f"\nSaved figures to {FIGURE_DIR}/")
+
+
+if __name__ == "__main__":
+    run_vasicek_experiment()
