@@ -1,89 +1,81 @@
 import numpy as np
+import pytest
 
-from src.continous_sindy import (
+from src.continuous_sindy import (
     finite_difference,
     fit_continuous_sindy,
-    predict_derivative_continuous_sindy,
+    predict_continuous_sindy,
 )
 
 
 def test_finite_difference_linear_data():
     dt = 0.1
 
-    X = np.array([
+    states = np.array([
         [0.0],
         [0.1],
         [0.2],
         [0.3],
     ])
 
-    X_current, dXdt = finite_difference(X, dt)
+    current_states, derivatives = finite_difference(states, dt)
 
-    print("Test: finite difference on linear data")
-    print("X_current:")
-    print(X_current)
-    print("dXdt:")
-    print(dXdt)
-    print()
-
-    expected_X_current = np.array([
+    expected_current_states = np.array([
         [0.0],
         [0.1],
         [0.2],
     ])
 
-    expected_dXdt = np.array([
+    expected_derivatives = np.array([
         [1.0],
         [1.0],
         [1.0],
     ])
 
-    assert np.allclose(X_current, expected_X_current)
-    assert np.allclose(dXdt, expected_dXdt)
+    assert np.allclose(current_states, expected_current_states)
+    assert np.allclose(derivatives, expected_derivatives)
 
 
 def test_continuous_sindy_recovers_linear_dynamics():
     dt = 0.01
 
-    # Data from exact solution of x_dot = -x:
-    # x(t) = exp(-t)
-    t = np.arange(0, 2, dt)
-    X = np.exp(-t).reshape(-1, 1)
+    # Exact solution of dx/dt = -x.
+    time = np.arange(0.0, 2.0, dt)
+    states = np.exp(-time).reshape(-1, 1)
 
-    Xi, names, X_current, dXdt = fit_continuous_sindy(
-        X,
-        dt=dt,
-        degree=2,
-        threshold=0.05,
-        max_iter=10,
+    coefficients, feature_names, current_states, derivatives = (
+        fit_continuous_sindy(
+            states,
+            dt=dt,
+            degree=2,
+            threshold=0.05,
+            max_iter=10,
+        )
     )
 
-    dXdt_hat = predict_derivative_continuous_sindy(
-        X_current,
-        Xi,
+    predicted_derivatives = predict_continuous_sindy(
+        current_states,
+        coefficients,
         degree=2,
     )
 
-    print("Test: continuous-time SINDy recovers x_dot = -x")
-    print("Feature names:", names)
-    print("Xi:")
-    print(Xi)
-    print("First 5 true derivatives:")
-    print(dXdt[:5])
-    print("First 5 predicted derivatives:")
-    print(dXdt_hat[:5])
-    print()
+    assert coefficients.shape == (3, 1)
+    assert feature_names == ["1", "x1", "x1^2"]
+    assert predicted_derivatives.shape == derivatives.shape
 
-    assert Xi.shape == (3, 1)
-    assert names == ["1", "x1", "x1^2"]
+    # Expected discovered model: dx/dt ≈ -x.
+    assert np.isclose(coefficients[0, 0], 0.0, atol=0.1)
+    assert np.isclose(coefficients[1, 0], -1.0, atol=0.1)
+    assert np.isclose(coefficients[2, 0], 0.0, atol=0.1)
 
-    # Expected model: x_dot ≈ -x
-    assert np.allclose(Xi[0, 0], 0.0, atol=0.1)
-    assert np.allclose(Xi[1, 0], -1.0, atol=0.1)
-    assert np.allclose(Xi[2, 0], 0.0, atol=0.1)
+    assert np.mean((predicted_derivatives - derivatives) ** 2) < 1e-4
 
 
-if __name__ == "__main__":
-    test_finite_difference_linear_data()
-    test_continuous_sindy_recovers_linear_dynamics()
-    print("All continuous SINDy tests passed ✅")
+def test_finite_difference_rejects_non_positive_dt():
+    states = np.array([
+        [0.0],
+        [1.0],
+    ])
+
+    with pytest.raises(ValueError, match="dt must be positive"):
+        finite_difference(states, dt=0.0)

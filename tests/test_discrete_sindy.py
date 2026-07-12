@@ -1,10 +1,14 @@
 import numpy as np
+import pytest
 
-from src.discrete_sindy import fit_discrete_sindy, predict_discrete_sindy
+from src.discrete_sindy import (
+    fit_discrete_sindy,
+    predict_discrete_sindy,
+)
 
 
-def test_discrete_sindy_linear_map():
-    X = np.array([
+def test_discrete_sindy_recovers_linear_map():
+    states = np.array([
         [0.0],
         [1.0],
         [2.0],
@@ -12,36 +16,38 @@ def test_discrete_sindy_linear_map():
         [4.0],
     ])
 
-    Y = 1.0 + 0.5 * X
+    targets = 1.0 + 0.5 * states
 
-    Xi, names = fit_discrete_sindy(
-        X,
-        Y,
+    coefficients, feature_names = fit_discrete_sindy(
+        states,
+        targets,
         degree=2,
         threshold=0.05,
         max_iter=10,
     )
 
-    Y_hat = predict_discrete_sindy(X, Xi, degree=2)
+    predictions = predict_discrete_sindy(
+        states,
+        coefficients,
+        degree=2,
+    )
 
-    print("Test: discrete-time SINDy on linear map")
-    print("Feature names:", names)
-    print("Xi:")
-    print(Xi)
-    print("Y_hat:")
-    print(Y_hat)
-    print()
+    assert coefficients.shape == (3, 1)
+    assert feature_names == ["1", "x1", "x1^2"]
 
-    assert Xi.shape == (3, 1)
-    assert names == ["1", "x1", "x1^2"]
+    assert np.isclose(coefficients[0, 0], 1.0)
+    assert np.isclose(coefficients[1, 0], 0.5)
+    assert np.isclose(coefficients[2, 0], 0.0)
 
-    assert np.allclose(Xi[0, 0], 1.0)
-    assert np.allclose(Xi[1, 0], 0.5)
-    assert np.allclose(Xi[2, 0], 0.0)
-
-    assert np.allclose(Y_hat, Y)
+    assert np.allclose(predictions, targets)
 
 
-if __name__ == "__main__":
-    test_discrete_sindy_linear_map()
-    print("All discrete SINDy tests passed")
+def test_discrete_sindy_rejects_mismatched_rows():
+    states = np.zeros((5, 1))
+    targets = np.zeros((4, 1))
+
+    with pytest.raises(
+        ValueError,
+        match="same number of rows",
+    ):
+        fit_discrete_sindy(states, targets)
